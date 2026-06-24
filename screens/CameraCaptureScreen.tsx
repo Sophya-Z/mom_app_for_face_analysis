@@ -2,20 +2,23 @@ import { HeaderBackButton } from '@react-navigation/elements';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
+  LayoutChangeEvent,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { RootStackParamList } from '../navigation/types';
+import { cropImageToViewfinder } from '../services/cropImageToViewfinder';
 import { saveImageLocal } from '../services/saveImageLocal';
 import { uploadAnalyzeAndReplaceResult } from '../services/uploadAnalyzeAndReplaceResult';
 import { fontRegular } from '../theme/fonts';
@@ -24,22 +27,25 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CameraCapture'>;
 
 const INSTRUCTION_TEXT = `Как сфотографироваться для анализа формы лица и цветотипа
 
-• Снимайте при дневном естественном свете (лучше у окна), без жёлтой лампы сверху — так точнее определяется цветотип.
+• Снимайте при дневном естественном свете (лучше у окна), без жёлтой лампы сверху.
 
-• Снимите очки, уберите волосы с лица (чёлка, пряди), чтобы были видны брови, скулы и линия челюсти — это важно для оценки формы лица.
+• Снимите очки, уберите волосы с лица (чёлка, пряди), чтобы были видны брови, скулы и линия челюсти.
 
 • Держите телефон на уровне глаз, смотрите прямо в камеру, без сильного наклона головы в стороны.
 
 • Лицо должно занимать крупный план по центру кадра, по краям оставьте небольшой запас.
 
-• Избегайте жёсткого бокового света и глубоких теней на половинах лица — освещение должно быть по возможности ровным.`;
+• Избегайте жёсткого бокового света и глубоких теней на половинах лица (освещение должно быть по возможности ровным).`;
 
 const HEADER_BG = 'rgba(9, 74, 76, 0.92)';
 const PANEL_BG = 'rgba(8, 62, 63, 0.95)';
 const DIM = 'rgba(0, 0, 0, 0.5)';
+/** Fallback until bottom bar `onLayout` fires (shutter + safe area). */
+const BOTTOM_BAR_FALLBACK_H = 120;
 
 export function CameraCaptureScreen({ navigation }: Props) {
   const insets = useSafeAreaInsets();
+  const { width: screenW, height: screenH } = useWindowDimensions();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const [cameraReady, setCameraReady] = useState(false);
@@ -47,6 +53,24 @@ export function CameraCaptureScreen({ navigation }: Props) {
   const [instructionOpen, setInstructionOpen] = useState(true);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [topBarH, setTopBarH] = useState(0);
+  const [bottomBarH, setBottomBarH] = useState(0);
+
+  const viewfinder = useMemo(() => {
+    const bottom = bottomBarH > 0 ? bottomBarH : BOTTOM_BAR_FALLBACK_H;
+    return {
+      width: screenW,
+      height: Math.max(0, screenH - topBarH - bottom),
+    };
+  }, [screenH, screenW, topBarH, bottomBarH]);
+
+  const onTopBarLayout = useCallback((e: LayoutChangeEvent) => {
+    setTopBarH(e.nativeEvent.layout.height);
+  }, []);
+
+  const onBottomBarLayout = useCallback((e: LayoutChangeEvent) => {
+    setBottomBarH(e.nativeEvent.layout.height);
+  }, []);
 
   const takePicture = useCallback(async () => {
     if (
@@ -61,13 +85,14 @@ export function CameraCaptureScreen({ navigation }: Props) {
     setCapturing(true);
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.9 });
-      setPreviewUri(photo.uri);
+      const cropped = await cropImageToViewfinder(photo.uri, viewfinder);
+      setPreviewUri(cropped);
     } catch {
       // ignore
     } finally {
       setCapturing(false);
     }
-  }, [cameraReady, capturing, instructionOpen, previewUri]);
+  }, [cameraReady, capturing, instructionOpen, previewUri, viewfinder]);
 
   const handleRetake = useCallback(async () => {
     setPreviewUri(null);
@@ -143,7 +168,10 @@ export function CameraCaptureScreen({ navigation }: Props) {
       )}
 
       <View pointerEvents="box-none" style={[styles.layers, { zIndex: 2 }]}>
-        <View style={[styles.topBar, { paddingTop: insets.top }]}>
+        <View
+          style={[styles.topBar, { paddingTop: insets.top }]}
+          onLayout={onTopBarLayout}
+        >
           <HeaderBackButton
             displayMode="minimal"
             style={{ paddingTop: 8 }}
@@ -178,7 +206,7 @@ export function CameraCaptureScreen({ navigation }: Props) {
         )}
 
         {!instructionOpen && !previewUri && (
-          <SafeAreaView edges={['bottom']} style={styles.bottomBar}>
+          <SafeAreaView edges={['bottom']} style={styles.bottomBar} onLayout={onBottomBarLayout}>
             <Pressable
               style={({ pressed }) => [
                 styles.shutterOuter,
@@ -197,11 +225,16 @@ export function CameraCaptureScreen({ navigation }: Props) {
 
         {previewUri !== null && (
           <View style={styles.previewRoot} pointerEvents="auto">
-            <View style={styles.previewImageWrap}>
+            <View
+              style={[
+                styles.previewImageWrap,
+                viewfinder.height > 0 && { height: viewfinder.height },
+              ]}
+            >
               <Image
                 source={{ uri: previewUri }}
                 style={styles.previewImage}
-                resizeMode="contain"
+                resizeMode="cover"
               />
               {uploading && (
                 <View style={styles.uploadOverlay}>
@@ -377,13 +410,14 @@ const styles = StyleSheet.create({
   previewRoot: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.92)',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     zIndex: 20,
   },
   previewImageWrap: {
-    flex: 1,
     width: '100%',
-    marginTop: 56,
+    alignSelf: 'center',
+    overflow: 'hidden',
+    backgroundColor: '#000',
     position: 'relative',
   },
   previewImage: {

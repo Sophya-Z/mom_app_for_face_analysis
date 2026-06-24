@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Expo Go — QR</title>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; text-align: center; }
+    canvas { margin: 1rem 0; }
+    code { display: block; margin: 1rem 0; padding: 0.75rem; background: #f4f4f4; border-radius: 8px; word-break: break-all; font-size: 0.95rem; }
+    p { color: #444; line-height: 1.5; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Подключение Expo Go</h1>
+  <p>Телефон и ПК должны быть в одной Wi‑Fi. Откройте <strong>Expo Go</strong> → «Scan QR code».</p>
+  <canvas id="qr"></canvas>
+  <code id="url"></code>
+  <p>Если QR не сканируется: в Expo Go выберите «Enter URL manually» и вставьте ссылку выше.</p>
+  <script>
+    const host = '192.168.0.113';
+    const expUrl = 'exp://' + host + ':8081';
+    document.getElementById('url').textContent = expUrl;
+    QRCode.toCanvas(document.getElementById('qr'), expUrl, { width: 280, margin: 2 });
+  </script>
+</body>
+</html>

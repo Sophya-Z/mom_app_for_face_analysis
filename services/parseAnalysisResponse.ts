@@ -1,3 +1,5 @@
+import { getGlassesFrameImage } from '../constants/glassesFrameImages';
+
 const FACE_SHAPE_EN_TO_RU: Record<string, string> = {
   oval: 'Овальное',
   ellipse: 'Овальное',
@@ -50,6 +52,74 @@ function findCategoryDetail(data: unknown, category: string): string | undefined
   const map = new Map<string, string>();
   collectCategoryDetails(data, map);
   return map.get(category);
+}
+
+function collectAllCategoryDetails(node: unknown, category: string, out: string[]): void {
+  if (node === null || node === undefined) {
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      collectAllCategoryDetails(item, category, out);
+    }
+    return;
+  }
+  if (typeof node !== 'object') {
+    return;
+  }
+  const o = node as Record<string, unknown>;
+  if (o.category === category && typeof o.detail === 'string') {
+    const t = o.detail.trim();
+    if (t !== '') {
+      out.push(t);
+    }
+  }
+  for (const v of Object.values(o)) {
+    collectAllCategoryDetails(v, category, out);
+  }
+}
+
+export function findAllCategoryDetails(data: unknown, category: string): string[] {
+  const out: string[] = [];
+  collectAllCategoryDetails(data, category, out);
+  return out;
+}
+
+export function parseGlassesFrameNames(detail: string | undefined): string[] {
+  if (detail === undefined || detail.trim() === '' || detail.trim() === '—') {
+    return [];
+  }
+  const t = detail.trim();
+  if (!t.includes(',')) {
+    return [];
+  }
+  return t
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+}
+
+function scoreGlassesFramesDetail(detail: string): number {
+  const names = parseGlassesFrameNames(detail);
+  if (names.length === 0) {
+    return 0;
+  }
+  const known = names.filter((n) => getGlassesFrameImage(n) !== undefined).length;
+  return known * 10 + names.length;
+}
+
+export function pickGlassesFramesDetail(data: unknown): string | undefined {
+  const all = findAllCategoryDetails(data, 'glasses');
+  let best: string | undefined;
+  let bestScore = 0;
+  for (const d of all) {
+    const score = scoreGlassesFramesDetail(d);
+    if (score > bestScore) {
+      bestScore = score;
+      best = d;
+    }
+  }
+  return best;
 }
 
 function readFaceShapeFromObject(o: Record<string, unknown>): string | undefined {
@@ -268,25 +338,59 @@ function pickContrastDetail(data: unknown): string | undefined {
   return undefined;
 }
 
+export function getSeasonalTwelve(data: unknown): string | undefined {
+  const walk = (node: unknown, depth: number): string | undefined => {
+    if (depth > 16 || node === null || node === undefined || typeof node !== 'object') {
+      return undefined;
+    }
+    const o = node as Record<string, unknown>;
+    const direct = o.seasonal_twelve;
+    if (typeof direct === 'string' && direct.trim() !== '') {
+      return direct.trim();
+    }
+    for (const v of Object.values(o)) {
+      const found = walk(v, depth + 1);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  };
+  return walk(data, 0);
+}
+
 export type ParsedAnalysisUi = {
   faceShapeRu: string;
   glassesDetail: string;
+  glassesFrameNames: string[];
   colorotypeTitle: string;
   contrastDetail: string;
   suitableColors: string;
+  seasonTwelve: string | undefined;
 };
 
 export function parseAnalysisForUi(data: unknown): ParsedAnalysisUi {
   const rawShape = getRawFaceShape(data);
-  const glasses = findCategoryDetail(data, 'glasses');
+  const allGlasses = findAllCategoryDetails(data, 'glasses');
+  const framesDetail = pickGlassesFramesDetail(data);
+  const glassesFrameNames = framesDetail !== undefined ? parseGlassesFrameNames(framesDetail) : [];
+  const glassesFallback =
+    allGlasses.find((d) => parseGlassesFrameNames(d).length === 0) ??
+    allGlasses[0] ??
+    findCategoryDetail(data, 'glasses');
   const clothing = pickClothingColorsDetail(data);
   const contrast = pickContrastDetail(data);
 
   return {
     faceShapeRu: translateFaceShapeToRu(rawShape),
-    glassesDetail: glasses !== undefined && glasses.trim() !== '' ? glasses.trim() : '—',
+    glassesDetail:
+      glassesFallback !== undefined && glassesFallback.trim() !== ''
+        ? glassesFallback.trim()
+        : '—',
+    glassesFrameNames,
     colorotypeTitle: prefixBeforeFirstColon(clothing),
     contrastDetail: contrast !== undefined ? contrast : '—',
     suitableColors: suffixAfterFirstColon(clothing),
+    seasonTwelve: getSeasonalTwelve(data),
   };
 }

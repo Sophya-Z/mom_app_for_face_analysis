@@ -1,5 +1,6 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 
+import { AnalysisHistoryScreen } from '../screens/AnalysisHistoryScreen';
 import { AnalysisResultScreen } from '../screens/AnalysisResultScreen';
 import { CameraCaptureScreen } from '../screens/CameraCaptureScreen';
 import { HomeScreen } from '../screens/HomeScreen';
@@ -30,6 +31,11 @@ export function AppNavigator() {
       <Stack.Screen
         name="CameraCapture"
         component={CameraCaptureScreen}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="AnalysisHistory"
+        component={AnalysisHistoryScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen

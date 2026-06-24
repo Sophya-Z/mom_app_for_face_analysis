@@ -1,7 +1,7 @@
 import { HeaderBackButton } from '@react-navigation/elements';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -13,9 +13,21 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ColorotypePalette } from '../components/ColorotypePalette';
+import { GlassesFrameList } from '../components/GlassesFrameList';
+import { OutfitScanScores } from '../components/OutfitScanScores';
+import { SavedMakeupPhoto } from '../components/SavedMakeupPhoto';
+import { getColorotypePalette } from '../constants/colorotypePalettes';
 import type { RootStackParamList } from '../navigation/types';
 import { fetchContourFinalImageDataUri } from '../services/fetchContourFinalImage';
-import { parseAnalysisForUi } from '../services/parseAnalysisResponse';
+import { fetchTryOnMakeupPhotoDataUri } from '../services/fetchTryOnMakeupPhoto';
+import { getSeasonalTwelve, parseAnalysisForUi } from '../services/parseAnalysisResponse';
+import { pickImageFromGallery } from '../services/pickImageFromGallery';
+import { uploadOutfitScan, type OutfitScanResult } from '../services/uploadOutfitScan';
+import {
+  saveContourPhotoToHistory,
+  saveTryOnMakeupToHistory,
+} from '../state/analysisHistoryStore';
 import { getLastAnalysisResult } from '../state/analysisResultStore';
 import { fontRegular } from '../theme/fonts';
 
@@ -28,19 +40,44 @@ const TAB_INACTIVE_BG = 'rgba(244, 253, 253, 0.12)';
 const TAB_INACTIVE_BORDER = 'rgba(224, 240, 240, 0.45)';
 const PHOTO_W = 224;
 const PHOTO_H = 320;
+const TRY_ON_REVEAL_MIN_MS = 2000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 type TabId = 'face' | 'colorotype';
 
 export function AnalysisResultScreen({ navigation, route }: Props) {
   const insets = useSafeAreaInsets();
-  const { localUri } = route.params;
-  const data = getLastAnalysisResult();
+  const {
+    localUri,
+    showTryOnMakeup = true,
+    analysisData,
+    historyId,
+    savedContourPhotoUri,
+    savedTryOnPhotoUri,
+  } = route.params;
+  const fromHistory = !showTryOnMakeup;
+  const data = analysisData ?? getLastAnalysisResult();
   const parsed = useMemo(() => parseAnalysisForUi(data), [data]);
 
   const [tab, setTab] = useState<TabId>('face');
   const [contourUri, setContourUri] = useState<string | null>(null);
   const [contourLoading, setContourLoading] = useState(true);
   const [contourError, setContourError] = useState<string | null>(null);
+
+  const [tryOnUri, setTryOnUri] = useState<string | null>(null);
+  const [tryOnVisible, setTryOnVisible] = useState(false);
+  const [tryOnUiLoading, setTryOnUiLoading] = useState(false);
+  const [tryOnUserError, setTryOnUserError] = useState<string | null>(null);
+  const tryOnPrefetchRef = useRef<Promise<{ uri: string } | { error: string }> | null>(null);
+
+  const [outfitLoading, setOutfitLoading] = useState(false);
+  const [outfitError, setOutfitError] = useState<string | null>(null);
+  const [outfitResult, setOutfitResult] = useState<OutfitScanResult | null>(null);
 
   useEffect(() => {
     if (data === undefined || !localUri) {
@@ -50,15 +87,60 @@ export function AnalysisResultScreen({ navigation, route }: Props) {
     let cancelled = false;
     setContourLoading(true);
     setContourError(null);
+    setTryOnUri(null);
+    setTryOnVisible(false);
+    setTryOnUserError(null);
+    setTryOnUiLoading(false);
+    tryOnPrefetchRef.current = null;
+
     void (async () => {
       try {
-        const uri = await fetchContourFinalImageDataUri(localUri);
-        if (!cancelled) {
-          setContourUri(uri);
+        if (savedContourPhotoUri) {
+          if (!cancelled) {
+            setContourUri(savedContourPhotoUri);
+          }
+        } else if (fromHistory) {
+          if (!cancelled) {
+            setContourError('Контур не сохранён локально для этой записи');
+          }
+        } else {
+          const uri = await fetchContourFinalImageDataUri(localUri);
+          const localPath = historyId
+            ? await saveContourPhotoToHistory(historyId, uri)
+            : null;
+          if (!cancelled) {
+            setContourUri(localPath ?? uri);
+          }
+        }
+
+        const seasonTwelve = getSeasonalTwelve(data);
+        if (!cancelled && showTryOnMakeup && seasonTwelve) {
+          const prefetch = (async (): Promise<{ uri: string } | { error: string }> => {
+            try {
+              const makeupUri = await fetchTryOnMakeupPhotoDataUri(localUri, seasonTwelve);
+              const displayUri = historyId
+                ? (await saveTryOnMakeupToHistory(historyId, makeupUri)) ?? makeupUri
+                : makeupUri;
+              if (!cancelled) {
+                setTryOnUri(displayUri);
+              }
+              return { uri: displayUri };
+            } catch (e) {
+              const message =
+                e instanceof Error ? e.message : 'Не удалось примерить макияж';
+              return { error: message };
+            }
+          })();
+          tryOnPrefetchRef.current = prefetch;
         }
       } catch (e) {
         if (!cancelled) {
-          const message = e instanceof Error ? e.message : 'Не удалось загрузить контур';
+          const message =
+            fromHistory && !savedContourPhotoUri
+              ? 'Контур не сохранён локально для этой записи'
+              : e instanceof Error
+                ? e.message
+                : 'Не удалось загрузить контур';
           setContourError(message);
         }
       } finally {
@@ -70,9 +152,78 @@ export function AnalysisResultScreen({ navigation, route }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [data, localUri]);
+  }, [
+    data,
+    localUri,
+    showTryOnMakeup,
+    historyId,
+    savedContourPhotoUri,
+    fromHistory,
+  ]);
 
   const missingData = data === undefined || !localUri;
+
+  const handleCheckOutfit = () => {
+    const seasonTwelve = parsed.seasonTwelve;
+    if (!seasonTwelve) {
+      setOutfitError('Не найден seasonal_twelve в ответе анализа');
+      return;
+    }
+    void (async () => {
+      const pick = await pickImageFromGallery();
+      if (!pick.ok) {
+        return;
+      }
+      setOutfitLoading(true);
+      setOutfitError(null);
+      setOutfitResult(null);
+      try {
+        const result = await uploadOutfitScan(pick.uri, seasonTwelve);
+        setOutfitResult(result);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Не удалось проверить образ';
+        setOutfitError(message);
+      } finally {
+        setOutfitLoading(false);
+      }
+    })();
+  };
+
+  const handleTryOnMakeup = () => {
+    if (tryOnUiLoading) {
+      return;
+    }
+    if (tryOnVisible) {
+      setTryOnVisible(false);
+      setTryOnUserError(null);
+      return;
+    }
+
+    const seasonTwelve = getSeasonalTwelve(data);
+    if (!seasonTwelve) {
+      setTryOnUserError('Не найден seasonal_twelve в ответе анализа');
+      return;
+    }
+
+    setTryOnUiLoading(true);
+    setTryOnUserError(null);
+
+    void (async () => {
+      const prefetch = tryOnPrefetchRef.current;
+      const [outcome] = await Promise.all([
+        prefetch ?? Promise.resolve({ error: 'Не удалось примерить макияж' } as const),
+        delay(TRY_ON_REVEAL_MIN_MS),
+      ]);
+
+      setTryOnUiLoading(false);
+      if ('uri' in outcome && outcome.uri) {
+        setTryOnUri(outcome.uri);
+        setTryOnVisible(true);
+      } else {
+        setTryOnUserError('error' in outcome ? outcome.error : 'Не удалось примерить макияж');
+      }
+    })();
+  };
 
   return (
     <View style={styles.root}>
@@ -168,7 +319,10 @@ export function AnalysisResultScreen({ navigation, route }: Props) {
               <Text style={styles.label}>Форма лица:</Text>
               <Text style={[styles.value, styles.valueWrap]}>{parsed.faceShapeRu}</Text>
               <Text style={[styles.label, styles.labelSpaced]}>Подходящие оправы очков:</Text>
-              <Text style={[styles.value, styles.valueWrap]}>{parsed.glassesDetail}</Text>
+              <GlassesFrameList
+                frameNames={parsed.glassesFrameNames}
+                fallbackText={parsed.glassesDetail}
+              />
             </View>
           ) : (
             <View style={styles.tabPanel}>
@@ -181,9 +335,64 @@ export function AnalysisResultScreen({ navigation, route }: Props) {
                 <Text style={[styles.value, styles.valueWrap]}>
                   {parsed.suitableColors ?? '—'}
                 </Text>
+                <ColorotypePalette colors={getColorotypePalette(parsed.seasonTwelve)} />
               </View>
+
+              {!showTryOnMakeup && savedTryOnPhotoUri ? (
+                <SavedMakeupPhoto uri={savedTryOnPhotoUri} />
+              ) : null}
+
+              {showTryOnMakeup ? (
+                <>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.tryOnButton,
+                      pressed && styles.tabPressed,
+                      tryOnUiLoading && styles.tryOnButtonDisabled,
+                    ]}
+                    onPress={handleTryOnMakeup}
+                    disabled={tryOnUiLoading}
+                  >
+                    {tryOnUiLoading ? (
+                      <ActivityIndicator color="#F4FDFD" />
+                    ) : (
+                      <Text style={styles.tryOnButtonText}>Примерить подходящий макияж</Text>
+                    )}
+                  </Pressable>
+
+                  {tryOnUserError !== null && !tryOnVisible && !tryOnUiLoading ? (
+                    <Text style={[styles.contourErrorText, styles.tryOnMessage]}>{tryOnUserError}</Text>
+                  ) : null}
+
+                  {tryOnVisible && tryOnUri !== null ? <SavedMakeupPhoto uri={tryOnUri} /> : null}
+                </>
+              ) : null}
+              <Pressable
+            style={({ pressed }) => [
+              styles.tryOnButton,
+              styles.outfitButton,
+              pressed && styles.tabPressed,
+              outfitLoading && styles.tryOnButtonDisabled,
+            ]}
+            onPress={handleCheckOutfit}
+            disabled={outfitLoading}
+          >
+            {outfitLoading ? (
+              <ActivityIndicator color="#F4FDFD" />
+            ) : (
+              <Text style={styles.tryOnButtonText}>Оценка образа</Text>
+            )}
+          </Pressable>
+
+          {outfitError !== null ? (
+            <Text style={[styles.contourErrorText, styles.outfitMessage]}>{outfitError}</Text>
+          ) : null}
+
+          {outfitResult !== null ? <OutfitScanScores result={outfitResult} /> : null}
             </View>
           )}
+
+          
         </ScrollView>
       )}
       <StatusBar style="light" />
@@ -271,6 +480,40 @@ const styles = StyleSheet.create({
   },
   suitableSection: {
     width: '100%',
+  },
+  tryOnButton: {
+    marginTop: 24,
+    marginHorizontal: 4,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: TAB_ACTIVE,
+    borderWidth: 2,
+    borderColor: '#E0F1F1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  tryOnButtonDisabled: {
+    opacity: 0.75,
+  },
+  tryOnButtonText: {
+    fontFamily: fontRegular,
+    fontSize: 15,
+    color: '#F4FDFD',
+    textAlign: 'center',
+  },
+  tryOnMessage: {
+    marginTop: 12,
+    color: '#8B3030',
+  },
+  outfitButton: {
+    marginTop: 8,
+  },
+  outfitMessage: {
+    marginTop: 12,
+    color: '#8B3030',
+    textAlign: 'center',
   },
   label: {
     fontFamily: fontRegular,

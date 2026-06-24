@@ -14,23 +14,25 @@ export function HomeScreen({ navigation }: Props) {
   return (
     <View style={styles.root} collapsable={false}>
       <StatusBar style="dark" />
-      <View
-        style={[
-          styles.topRow,
-          { paddingTop: insets.top + 8, paddingRight: 16 },
-        ]}
-      >
-        <Image
-          source={require('../assets/vkr_flowers.png')}
-          style={styles.flower}
-          resizeMode="contain"
-        />
+      <View style={[styles.topRow, { paddingTop: insets.top + 48, paddingHorizontal: 32 }]}>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          style={styles.historyButton}
+          onPress={() => navigation.navigate('AnalysisHistory')}
+        >
+          <Text style={styles.historyButtonText}>История</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.centerBlock}>
         <Text style={styles.welcomeText}>
           Добро пожаловать в приложение-консультант по улучшению внешнего вида.
         </Text>
+        <Image
+          source={require('../assets/vkr_flowers.png')}
+          style={styles.flower}
+          resizeMode="contain"
+        />
       </View>
 
       <SafeAreaView
@@ -58,15 +60,29 @@ const styles = StyleSheet.create({
   },
   topRow: {
     width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
     alignItems: 'flex-start',
   },
+  historyButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#42ACAF',
+    backgroundColor: '#E0F0F0',
+  },
+  historyButtonText: {
+    fontFamily: fontRegular,
+    fontSize: 15,
+    color: '#094A4C',
+  },
   flower: {
-    width: 175,
-    height: 184,
+    width: 88,
+    height: 92,
+    paddingTop: 20,
+    paddingLeft: 450,
   },
   centerBlock: {
+    paddingTop: 64,
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 58,
